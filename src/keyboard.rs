@@ -124,6 +124,10 @@ impl Key {
     pub fn finger(&self) -> HandFinger {
         self.finger
     }
+
+    pub fn is_base(&self) -> bool {
+        self.is_base
+    }
 }
 
 #[derive(Debug, Clone)]
