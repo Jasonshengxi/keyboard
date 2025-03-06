@@ -70,6 +70,7 @@ impl CountOutcome {
 const CACHE_PATH: &str = "cache.bin";
 
 #[derive(Debug)]
+#[allow(unused)]
 pub enum CacheFailReason {
     FileSystem(std::io::Error),
     Deserialize(bincode::Error),

@@ -1,4 +1,4 @@
-use std::{num::NonZeroU8, ops::Mul};
+use std::num::NonZeroU8;
 
 use array_map::ArrayMap;
 use derive_more::{Add, AddAssign, Sum};
@@ -30,11 +30,35 @@ use crate::{
 // - redirects
 // - staccato tax
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct Evaluation {
     pub letter: LetterEval,
     pub bigram: BigramEval,
     pub trigram: TrigramEval,
+}
+
+impl std::ops::Div for Evaluation {
+    type Output = Self;
+
+    fn div(self, rhs: Self) -> Self::Output {
+        Self {
+            letter: self.letter / rhs.letter,
+            bigram: self.bigram / rhs.bigram,
+            trigram: self.trigram / rhs.trigram,
+        }
+    }
+}
+
+impl std::ops::Mul<f32> for Evaluation {
+    type Output = Self;
+
+    fn mul(self, rhs: f32) -> Self::Output {
+        Self {
+            letter: self.letter * rhs,
+            bigram: self.bigram * rhs,
+            trigram: self.trigram * rhs,
+        }
+    }
 }
 
 macro_rules! multi_eval {
@@ -45,37 +69,38 @@ macro_rules! multi_eval {
             $(,)?
         }
     ) =>{
-        impl Mul<f32> for $name {
+        impl std::ops::Mul<f32> for $name {
             type Output = Self;
 
             fn mul(self, _rhs: f32) -> Self::Output {
-                Self {
-                    $($field : self.$field * _rhs),*
-                }
+                Self { $($field : self.$field * _rhs),* }
+            }
+        }
+
+        impl std::ops::Div for $name {
+            type Output = Self;
+
+            fn div(self, _rhs: Self) -> Self {
+                Self { $($field : self.$field / _rhs.$field),* }
             }
         }
 
         impl $name {
             pub const NAN: Self = Self::splat(f32::NAN);
-            pub const ZERO: Self = Self::splat(0.0);
 
             pub const fn splat(_x: f32) -> Self {
-                Self {
-                    $($field: _x),*
-                }
+                Self { $($field: _x),* }
             }
 
             pub fn min(self, _other: Self) -> Self {
-                Self {
-                    $($field : self.$field.min(_other.$field)),*
-                }
+                Self { $($field : self.$field.min(_other.$field)),* }
             }
         }
     };
 }
 
 #[macro_rules_derive(multi_eval!)]
-#[derive(Debug, Add, AddAssign, Sum)]
+#[derive(Debug, Clone, Copy, Add, AddAssign, Sum)]
 pub struct LetterEval {
     pub base_dist: f32,
     pub base_x: f32,
@@ -83,7 +108,7 @@ pub struct LetterEval {
 }
 
 #[macro_rules_derive(multi_eval!)]
-#[derive(Debug, Add, AddAssign, Sum)]
+#[derive(Debug, Clone, Copy, Add, AddAssign, Sum)]
 pub struct BigramEval {
     pub sfb: f32,
     pub shb: f32,
@@ -94,7 +119,7 @@ pub struct BigramEval {
 }
 
 #[macro_rules_derive(multi_eval!)]
-#[derive(Debug, Add, AddAssign, Sum)]
+#[derive(Debug, Clone, Copy, Add, AddAssign, Sum)]
 pub struct TrigramEval {
     pub redirects: f32,
     pub rolls: f32,
@@ -405,7 +430,7 @@ pub fn one_trigram(info: &KeyboardLayout, trigram: [u8; 3]) -> TrigramEval {
         TrigramEval::NAN,
         |_, _| {
             // fuck what do i do about multifinger shit
-            TrigramEval::ZERO
+            TrigramEval::splat(0.0)
         },
         TrigramEval::min,
         trigram,
