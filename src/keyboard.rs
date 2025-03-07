@@ -1,7 +1,7 @@
 use array_map::Indexable;
 use glam::Vec2;
 
-#[derive(Debug, Clone, Copy, Default, Indexable)]
+#[derive(Debug, Clone, Copy, Default, Indexable, PartialEq, Eq)]
 pub enum Hand {
     #[default]
     Left,
@@ -15,7 +15,7 @@ impl Hand {
     ];
 }
 
-#[derive(Debug, Clone, Copy, Default, Indexable)]
+#[derive(Debug, Clone, Copy, Default, Indexable, PartialEq, Eq)]
 pub enum Finger {
     #[default]
     Thumb,
@@ -49,6 +49,7 @@ impl HandFinger {
 
 #[derive(Debug, Clone, Default)]
 pub struct HandFingerIter {
+    done: bool,
     hand: Hand,
     finger: Finger,
 }
@@ -57,6 +58,10 @@ impl Iterator for HandFingerIter {
     type Item = HandFinger;
 
     fn next(&mut self) -> Option<Self::Item> {
+        if self.done {
+            return None;
+        }
+
         let current = HandFinger {
             hand: self.hand,
             finger: self.finger,
@@ -80,7 +85,11 @@ impl Iterator for HandFingerIter {
         self.finger = next_finger;
         self.hand = next_hand;
 
-        alive.then_some(current)
+        if !alive {
+            self.done = true;
+        }
+
+        Some(current)
     }
 }
 

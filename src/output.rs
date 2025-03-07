@@ -1,18 +1,19 @@
 use colored::Colorize as _;
 use std::{
     collections::{hash_map, HashMap},
-    fmt::Write as _, num::NonZeroU8,
+    fmt::{Display, Write as _}, num::NonZeroU8,
 };
 
 use crate::layout::{Behavior, Layout};
 
-fn render_frequency_table<I, F, const NGRAM: usize>(
-    data: HashMap<[u8; NGRAM], u32>,
+pub fn render_frequency_table<I, F, E, const NGRAM: usize>(
+    data: HashMap<[u8; NGRAM], E>,
     top_n: usize,
     func: F,
 ) where
-    I: IntoIterator<Item = ([u8; NGRAM], u32)>,
-    F: FnOnce(hash_map::IntoIter<[u8; NGRAM], u32>) -> I,
+    I: IntoIterator<Item = ([u8; NGRAM], E)>,
+    F: FnOnce(hash_map::IntoIter<[u8; NGRAM], E>) -> I,
+    E: Ord + Display + Copy
 {
     let mut pairs = func(data.into_iter()).into_iter().collect::<Vec<_>>();
     let len = pairs.len();
@@ -71,7 +72,7 @@ pub fn print_ferris_layout(layout: &Layout) {
 
     fn row2(key: Option<Behavior>) {
         match key {
-            Some(Behavior::Shift) => print!(" {} │", "S".blue()),
+            Some(Behavior::Shift) => print!(" {} │", "S".blue().bold()),
             Some(Behavior::Layer(layer)) => print!(" {} │", layer.to_string().blue()),
             None => print!("   │"),
         }

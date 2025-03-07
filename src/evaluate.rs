@@ -1,8 +1,8 @@
-use std::num::NonZeroU8;
+use std::{collections::HashSet, num::NonZeroU8};
 
 use array_map::ArrayMap;
 use derive_more::{Add, AddAssign, Sum};
-use glam::Vec2;
+use glam::{Vec2, Vec3};
 use macro_rules_attribute::macro_rules_derive;
 use rustc_hash::FxHashMap;
 
@@ -10,7 +10,7 @@ use crate::{
     counter::{Bigrams, CountOutcome, Letters, Trigrams},
     iter::OneIter,
     keyboard::{Finger, Hand, HandFinger, Keyboard},
-    layout::{Behavior, Layout},
+    layout::{Behavior, KeyLoc, Layout},
 };
 
 // terminology:
@@ -61,11 +61,20 @@ impl std::ops::Mul<f32> for Evaluation {
     }
 }
 
+macro_rules! splat_eval {
+    ($name:ident : f32) => {
+        $name
+    };
+    ($name:ident : Vec3) => {
+        Vec3::splat($name)
+    };
+}
+
 macro_rules! multi_eval {
     (
         $(#[$meta:meta])*
         $v:vis struct $name:ident {
-            $($v_:vis $field:ident : $ty:ty),*
+            $($v_:vis $field:ident : $ty:tt),*
             $(,)?
         }
     ) =>{
@@ -85,11 +94,21 @@ macro_rules! multi_eval {
             }
         }
 
+        impl std::ops::Div<f32> for $name {
+            type Output = Self;
+
+            fn div(self, _rhs: f32) -> Self {
+                Self { $($field : self.$field / _rhs),* }
+            }
+        }
+
+        #[allow(unused)]
         impl $name {
             pub const NAN: Self = Self::splat(f32::NAN);
+            pub const ZERO: Self = Self::splat(0.0);
 
             pub const fn splat(_x: f32) -> Self {
-                Self { $($field: _x),* }
+                Self { $($field: splat_eval!(_x: $ty)),* }
             }
 
             pub fn min(self, _other: Self) -> Self {
@@ -102,9 +121,7 @@ macro_rules! multi_eval {
 #[macro_rules_derive(multi_eval!)]
 #[derive(Debug, Clone, Copy, Add, AddAssign, Sum)]
 pub struct LetterEval {
-    pub base_dist: f32,
-    pub base_x: f32,
-    pub base_y: f32,
+    pub base: Vec3,
 }
 
 #[macro_rules_derive(multi_eval!)]
@@ -147,7 +164,16 @@ pub struct KeyboardLayout<'a> {
 }
 
 impl<'a> KeyboardLayout<'a> {
-    pub fn generate(layout: &Layout, keyboard: &'a Keyboard) -> Result<Self, u8> {
+    pub fn generate(layout: &'a Layout, keyboard: &'a Keyboard) -> Result<Self, u8> {
+        Self::generate_with_usage(layout, keyboard, None, None)
+    }
+
+    pub fn generate_with_usage(
+        layout: &'a Layout,
+        keyboard: &'a Keyboard,
+        mut used_keys: Option<&mut HashSet<KeyLoc>>,
+        mut used_holds: Option<&mut HashSet<usize>>,
+    ) -> Result<Self, u8> {
         let shift_keys = layout
             .find_on_base(|b| b == Behavior::Shift)
             .collect::<Vec<_>>();
@@ -187,6 +213,14 @@ impl<'a> KeyboardLayout<'a> {
                             }
                         }
 
+                        if let Some(ref mut used_keys) = used_keys {
+                            used_keys.insert(final_key);
+                        }
+
+                        if let Some(ref mut used_holds) = used_holds {
+                            used_holds.extend(shift_key.map(|x| x.index()));
+                            used_holds.extend(layer_key.map(|x| x.index()))
+                        }
                         combos.push(KeyCombo::new(
                             shift_key.map(|x| x.index()),
                             layer_key.map(|x| x.index()),
@@ -225,21 +259,21 @@ pub fn evaluate(info: &KeyboardLayout, count: &CountOutcome) -> Evaluation {
     Evaluation {
         letter: eval_letters(info, &count.letter),
         bigram: eval_bigrams(info, &count.bigrams),
-        trigram: eval_trigrams(info, &count.trigrams),
+        trigram: TrigramEval::ZERO,
     }
 }
 
 pub fn eval_letters(info: &KeyboardLayout, letters: &Letters) -> LetterEval {
     letters
         .iter()
-        .map(|(&letter, &freq)| one_letter(info, letter) * freq as f32)
+        .map(|(&letter, &freq)| avg_apply(one_letter(info, letter)) * freq as f32)
         .sum()
 }
 
 pub fn eval_bigrams(info: &KeyboardLayout, bigrams: &Bigrams) -> BigramEval {
     bigrams
         .iter()
-        .map(|(&bigram, &freq)| one_bigram(info, bigram) * freq as f32)
+        .map(|(&bigram, &freq)| avg_apply(one_bigram(info, bigram)) * freq as f32)
         .sum()
 }
 
@@ -250,56 +284,103 @@ pub fn eval_trigrams(info: &KeyboardLayout, trigrams: &Trigrams) -> TrigramEval 
         .sum()
 }
 
+fn avg_reduce<T: std::ops::Add<Output = T>>(x: (T, f32), y: (T, f32)) -> (T, f32) {
+    (x.0 + y.0, x.1 + y.1)
+}
+
+fn avg_apply<T: std::ops::Div<f32>>(x: (T, f32)) -> T::Output {
+    x.0 / x.1
+}
+
 fn convert_fingers(
     info: &KeyboardLayout,
     combo: &KeyCombo,
-) -> ArrayMap<HandFinger, Option<Vec2>, 10> {
-    let mut position = ArrayMap::<HandFinger, Option<Vec2>, 10>::new([None; 10]);
-    for index in std::iter::once(combo.key)
-        .chain(combo.shift)
-        .chain(combo.layer)
+) -> ArrayMap<HandFinger, Option<(Vec2, bool)>, 10> {
+    let mut position = ArrayMap::new([None; 10]);
+    for (index, hold) in std::iter::once((combo.key, false))
+        .chain(combo.shift.map(|x| (x, true)))
+        .chain(combo.layer.map(|x| (x, true)))
     {
         let key = info.kb.key(index);
-        position[key.finger()] = Some(key.pos());
+        position[key.finger()] = Some((key.pos(), hold));
     }
     position
 }
 
-pub fn one_letter(info: &KeyboardLayout, letter: [u8; 1]) -> LetterEval {
+pub fn finger_strength(finger: Finger) -> f32 {
+    match finger {
+        Finger::Thumb => 0.8,
+        Finger::Index => 1.0,
+        Finger::Middle => 1.0,
+        Finger::Ring => 0.4,
+        Finger::Pinky => 0.3,
+    }
+}
+
+pub fn hold_multiplier(hold: bool) -> f32 {
+    match hold {
+        true => 1.8,
+        false => 1.0,
+    }
+}
+
+pub fn finger_axis(finger: HandFinger) -> Vec2 {
+    let flip = finger.hand != Hand::Right;
+    let vec = match finger.finger {
+        Finger::Thumb => Vec2::X,
+        Finger::Index => Vec2::new(-1.0, 4.0).normalize(),
+        Finger::Middle | Finger::Ring | Finger::Pinky => Vec2::Y,
+    };
+    match flip {
+        true => Vec2::new(vec.x, vec.y),
+        false => Vec2::new(-vec.x, vec.y),
+    }
+}
+
+fn alignment_to_multiplier(hand: HandFinger, delta: Vec2) -> f32 {
+    let axis = finger_axis(hand);
+    let align = delta.normalize_or_zero().dot(axis);
+
+    1.0 + (-align) * 0.5
+}
+
+pub fn one_letter(info: &KeyboardLayout, letter: [u8; 1]) -> (LetterEval, f32) {
     one_letter_any(
         info,
-        LetterEval::NAN,
+        (LetterEval::ZERO, 0.0),
         |info, [c]| {
             let h = convert_fingers(info, c);
-            let base = info.base;
-            let mut base_dist = 0.0;
-            let mut base_x = 0.0;
-            let mut base_y = 0.0;
+            let bases = info.base;
+            let mut base = Vec3::ZERO;
 
-            for (a, b) in h.values().zip(base.values()) {
+            for ((h, a), b) in h.iter().zip(bases.values()) {
+                let hold = a.map(|x| x.1).unwrap_or(false);
+                let a = a.map(|x| x.0);
                 if let Some(a) = a {
+                    let strength = finger_strength(h.finger);
                     let delta = (a - b).abs();
-                    base_dist += delta.length();
-                    base_x += delta.x;
-                    base_y += delta.y;
+                    let align = alignment_to_multiplier(h, delta);
+
+                    let delta = Vec3::new(delta.x, delta.y, Z)
+                        * strength.recip()
+                        * hold_multiplier(hold)
+                        * align;
+                    const Z: f32 = 2.0;
+                    base += delta;
                 }
             }
 
-            LetterEval {
-                base_dist,
-                base_x,
-                base_y,
-            }
+            (LetterEval { base }, 1.0)
         },
-        LetterEval::min,
+        avg_reduce,
         letter,
     )
 }
 
-pub fn one_bigram(info: &KeyboardLayout, bigram: [u8; 2]) -> BigramEval {
+pub fn one_bigram(info: &KeyboardLayout, bigram: [u8; 2]) -> (BigramEval, f32) {
     one_bigram_any(
         info,
-        BigramEval::NAN,
+        (BigramEval::ZERO, 0.0),
         |info, [c1, c2]| {
             let h1 = convert_fingers(info, c1);
             let h2 = convert_fingers(info, c2);
@@ -313,37 +394,39 @@ pub fn one_bigram(info: &KeyboardLayout, bigram: [u8; 2]) -> BigramEval {
                 })
                 .sum();
 
-            let shb = Hand::ALL
-                .into_iter()
-                .map(|hand| {
-                    let [count1, count2] = [h1, h2].map(|h| {
-                        Finger::ALL
-                            .into_iter()
-                            .map(|finger| h[HandFinger::new(hand, finger)].is_some() as u8)
-                            .sum::<u8>()
-                    });
-                    let total = count1.min(count2);
-
-                    let invalid = Finger::ALL
-                        .into_iter()
-                        .map(|finger| {
-                            let finger = HandFinger::new(hand, finger);
-                            let [a1, a2] = [h1, h2].map(|h| h[finger]);
-                            (a1.is_some() && a1 == a2) as u8
-                        })
-                        .sum::<u8>();
-
-                    (total - invalid) as f32
-                })
-                .sum();
+            let shb = 0.0;
+            // let shb = Hand::ALL
+            //     .into_iter()
+            //     .map(|hand| {
+            //         let [count1, count2] = [h1, h2].map(|h| {
+            //             Finger::ALL
+            //                 .into_iter()
+            //                 .map(|finger| h[HandFinger::new(hand, finger)].is_some() as u8)
+            //                 .sum::<u8>()
+            //         });
+            //         let total = count1.min(count2);
+            //
+            //         let invalid = Finger::ALL
+            //             .into_iter()
+            //             .map(|finger| {
+            //                 let finger = HandFinger::new(hand, finger);
+            //                 let [a1, a2] = [h1, h2].map(|h| h[finger]);
+            //                 (a1.is_some() && a1 == a2) as u8
+            //             })
+            //             .sum::<u8>();
+            //
+            //         (total - invalid) as f32
+            //     })
+            //     .sum();
 
             let mut movement = 0.0;
             let mut lateral = 0.0;
             let mut vertical = 0.0;
-            for pair in h1.values().zip(h2.values()) {
+            for pair in h1.iter().zip(h2.values()) {
                 match pair {
-                    (&Some(x), &Some(y)) => {
-                        let delta = (x - y).abs();
+                    ((hand, &Some((x, _))), &Some((y, hy))) => {
+                        let delta =
+                            (x - y).abs() / finger_strength(hand.finger) * hold_multiplier(hy);
                         movement += delta.length();
                         lateral += delta.x;
                         vertical += delta.y;
@@ -356,16 +439,19 @@ pub fn one_bigram(info: &KeyboardLayout, bigram: [u8; 2]) -> BigramEval {
                 [(c1.layer, c2.layer), (c1.shift, c2.shift)].map(|(x, y)| u8::from(x != y));
             let staccato = (s1 + s2) as f32;
 
-            BigramEval {
-                sfb,
-                shb,
-                movement,
-                lateral,
-                vertical,
-                staccato,
-            }
+            (
+                BigramEval {
+                    sfb,
+                    shb,
+                    movement,
+                    lateral,
+                    vertical,
+                    staccato,
+                },
+                1.0,
+            )
         },
-        BigramEval::min,
+        avg_reduce,
         bigram,
     )
 }
@@ -435,4 +521,9 @@ pub fn one_trigram(info: &KeyboardLayout, trigram: [u8; 3]) -> TrigramEval {
         TrigramEval::min,
         trigram,
     )
+}
+
+/// sum squared evaluation
+pub fn sse<const N: usize>(combos: [(f32, f32); N]) -> f32 {
+    combos.into_iter().map(|(w, x)| w * x.powi(2)).sum()
 }

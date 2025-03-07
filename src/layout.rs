@@ -1,13 +1,93 @@
 use serde::{Deserialize, Serialize};
-use std::num::NonZeroU8;
+use std::{char::TryFromCharError, num::NonZeroU8};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Serialize, Deserialize)]
+struct SerdeBehaviors(String);
+
+impl From<SerdeBehaviors> for BaseBehavior {
+    fn from(value: SerdeBehaviors) -> Self {
+        Self(
+            value
+                .0
+                .chars()
+                .map(|ch| match ch {
+                    ' ' => None,
+                    'S' => Some(Behavior::Shift),
+                    c if c.is_ascii_digit() && c != '0' => Some(Behavior::Layer(
+                        NonZeroU8::new(c.to_digit(10).unwrap() as u8).unwrap(),
+                    )),
+                    _ => unreachable!(),
+                })
+                .collect(),
+        )
+    }
+}
+
+impl From<BaseBehavior> for SerdeBehaviors {
+    fn from(value: BaseBehavior) -> Self {
+        Self(
+            value
+                .0
+                .into_iter()
+                .map(|b| match b {
+                    Some(Behavior::Shift) => 'S',
+                    Some(Behavior::Layer(layer)) => char::from(b'0' + layer.get()),
+                    None => ' ',
+                })
+                .collect(),
+        )
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Behavior {
     Shift,
     Layer(NonZeroU8),
 }
 
+#[derive(Serialize, Deserialize)]
+#[serde(transparent)]
+struct SerdeLayer(String);
+
+impl From<LayoutLayer> for SerdeLayer {
+    fn from(value: LayoutLayer) -> Self {
+        Self(
+            value
+                .keys
+                .into_iter()
+                .map(|x| {
+                    x.map_or(' ', |v| match char::from(v.get()) {
+                        ' ' => 'S',
+                        x => x,
+                    })
+                })
+                .collect(),
+        )
+    }
+}
+
+impl TryFrom<SerdeLayer> for LayoutLayer {
+    type Error = TryFromCharError;
+
+    fn try_from(value: SerdeLayer) -> Result<Self, Self::Error> {
+        value
+            .0
+            .chars()
+            .map(|x| {
+                u8::try_from(match x {
+                    'S' => ' ',
+                    ' ' => '\0',
+                    _ => x,
+                })
+                .map(NonZeroU8::new)
+            })
+            .collect::<Result<_, _>>()
+            .map(|v| Self::new(v))
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(try_from = "SerdeLayer", into = "SerdeLayer")]
 pub struct LayoutLayer {
     keys: Vec<Option<NonZeroU8>>,
 }
@@ -15,6 +95,10 @@ pub struct LayoutLayer {
 impl LayoutLayer {
     pub fn new(keys: Vec<Option<NonZeroU8>>) -> Self {
         Self { keys }
+    }
+
+    pub fn into_keys(self) -> Vec<Option<NonZeroU8>> {
+        self.keys
     }
 
     pub fn set_key(&mut self, index: usize, key: Option<NonZeroU8>) {
@@ -39,17 +123,27 @@ impl LayoutLayer {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(from = "SerdeBehaviors", into = "SerdeBehaviors")]
+struct BaseBehavior(Vec<Option<Behavior>>);
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Layout {
     size: usize,
-    base_hold: Vec<Option<Behavior>>,
+    base_hold: BaseBehavior,
     layers: Vec<LayoutLayer>,
 }
 
 impl Layout {
     pub fn new(base_hold: Vec<Option<Behavior>>, layers: Vec<LayoutLayer>) -> Self {
         let size = base_hold.len();
-        layers.iter().for_each(|layer| assert_eq!(layer.len(), size));
-        Self { size, base_hold, layers }
+        layers
+            .iter()
+            .for_each(|layer| assert_eq!(layer.len(), size));
+        Self {
+            size,
+            base_hold: BaseBehavior(base_hold),
+            layers,
+        }
     }
 
     pub fn layers(&self) -> &[LayoutLayer] {
@@ -88,7 +182,7 @@ impl Layout {
         &self,
         mut func: F,
     ) -> impl Iterator<Item = KeyLoc> + use<'_, F> {
-        self.base_hold
+        self.base_hold()
             .iter()
             .enumerate()
             .filter_map(move |(i, l_key)| {
@@ -123,15 +217,15 @@ impl Layout {
     }
 
     pub fn base_hold(&self) -> &[Option<Behavior>] {
-        &self.base_hold
+        &self.base_hold.0
     }
 
     pub fn base_hold_mut(&mut self) -> &mut Vec<Option<Behavior>> {
-        &mut self.base_hold
+        &mut self.base_hold.0
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct KeyLoc {
     layer: u8,
     index: usize,
