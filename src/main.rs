@@ -1,6 +1,10 @@
+#![allow(unused_imports)]
+
 use evaluate::{Evaluation, KeyboardLayout};
 use keyboard::Keyboard;
 use layout::{Behavior, KeyLoc, Layout};
+use notify_rust::Notification;
+use qmk::QmkKeymap;
 use rand::Rng as _;
 use std::{
     cmp::Ordering,
@@ -17,6 +21,7 @@ mod keyboard;
 mod layout;
 mod optimization;
 mod output;
+mod qmk;
 
 pub const ALPHABET: &[u8; 97] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 \t\n\\\"<>(){}[]:!;.,/?=+&*^%@#_|'`$-~";
 pub fn in_alphabet(x: u8) -> bool {
@@ -38,32 +43,33 @@ fn main() {
         serde_json::from_str(&std::fs::read_to_string("kb/final.json").unwrap()).unwrap();
     const THIS_PATH: &str = "kb/final2.json";
 
-    // let layout2: Layout =
-    //     serde_json::from_str(&std::fs::read_to_string(THIS_PATH).unwrap()).unwrap();
-    // output::print_ferris_layout(&layout);
-    // output::print_ferris_layout(&layout2);
-    // let l1 = KeyboardLayout::generate(&layout, &keyboard)
-    //     .map_err(char::from)
-    //     .unwrap();
-    // let l2 = KeyboardLayout::generate(&layout2, &keyboard).unwrap();
-    // let eval = evaluate::evaluate(&l1, &count);
-    // println!("qwerty: {eval:#?}");
-    // let eval = evaluate::evaluate(&l2, &count);
-    // println!("??????: {eval:#?}");
+    let layout2: Layout =
+        serde_json::from_str(&std::fs::read_to_string(THIS_PATH).unwrap()).unwrap();
+    output::print_ferris_layout(&layout2);
+    let l1 = KeyboardLayout::generate(&reference_layout, &keyboard)
+        .map_err(char::from)
+        .unwrap();
+    let l2 = KeyboardLayout::generate(&layout2, &keyboard).unwrap();
+    let eval = evaluate::evaluate(&l1, &count);
+    println!("qwerty: {eval:#?}");
+    let eval = evaluate::evaluate(&l2, &count);
+    println!("??????: {eval:#?}");
 
-    // for &k in b1.keys() {
-    //     if b1[&k] != b2[&k] {
-    //         println!("{} {} {}", char::from(k), b1[&k], b2[&k]);
-    //     }
-    // }
+    let qmk_layout = QmkKeymap::from_layout(layout2).unwrap();
+    let json = serde_json::to_string_pretty(&qmk_layout).unwrap();
+    std::fs::write(THIS_PATH, json).unwrap();
+    return;
 
     fn to_evaluation(scaled: &Evaluation) -> f32 {
         evaluate::sse([
             (2.0, scaled.letter.base.x),
             (1.0, scaled.letter.base.y),
             (5.0, scaled.letter.base.z),
-            (2.0, scaled.bigram.movement),
-            (15.0, scaled.bigram.staccato),
+            (5.0, scaled.letter.stretch.x),
+            (3.0, scaled.letter.stretch.y),
+            (3.0, scaled.bigram.movement.x),
+            (2.0, scaled.bigram.movement.y),
+            (20.0, scaled.bigram.staccato),
         ])
     }
 
@@ -76,10 +82,12 @@ fn main() {
     let start_evaluation = to_evaluation(&start_eval);
     let eval_scaler = 1_000_000.0 / start_evaluation;
 
-    let result = optimization::anneal(
+    let (result, score) = optimization::anneal(
         start_layout,
-        200000,
-        |x| 5.0 * (1.0 - x),
+        1000000,
+        |x| {
+                30.0 * (1.0 - x)
+        },
         |_, layout| {
             let any_other_alphabetic = layout.layers().iter().skip(1).any(|layer| {
                 layer
@@ -135,6 +143,12 @@ fn main() {
             }
         },
     );
+    let _ = Notification::new()
+        .summary("Epoch Finished!")
+        .body(&format!(
+            "Training for {THIS_PATH} is complete, with score {score}."
+        ))
+        .show();
     let json = serde_json::to_string_pretty(&result).unwrap();
     std::fs::write(THIS_PATH, json).unwrap();
     output::print_ferris_layout(&result);

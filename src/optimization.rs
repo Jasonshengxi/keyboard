@@ -69,7 +69,7 @@ pub fn anneal<E>(
     profile: impl Fn(f32) -> f32,
     eval: impl Fn(u32, &Layout) -> Option<(f32, E)>,
     modifier: impl Fn(&mut SmallRng, &mut Layout, E),
-) -> Layout {
+) -> (Layout, f32) {
     let mut current = layout;
     let (mut current_score, _) = eval(0, &current).unwrap();
     let mut rng = SmallRng::from_os_rng();
@@ -103,5 +103,5 @@ pub fn anneal<E>(
         }
     }
 
-    current
+    (current, current_score)
 }

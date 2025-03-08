@@ -8,7 +8,7 @@ use rustc_hash::FxHashMap;
 
 use crate::{
     counter::{Bigrams, CountOutcome, Letters, Trigrams},
-    iter::OneIter,
+    iter::{OneIter, Range},
     keyboard::{Finger, Hand, HandFinger, Keyboard},
     layout::{Behavior, KeyLoc, Layout},
 };
@@ -68,6 +68,9 @@ macro_rules! splat_eval {
     ($name:ident : Vec3) => {
         Vec3::splat($name)
     };
+    ($name:ident : Vec2) => {
+        Vec2::splat($name)
+    };
 }
 
 macro_rules! multi_eval {
@@ -122,16 +125,14 @@ macro_rules! multi_eval {
 #[derive(Debug, Clone, Copy, Add, AddAssign, Sum)]
 pub struct LetterEval {
     pub base: Vec3,
+    pub stretch: Vec2,
 }
 
 #[macro_rules_derive(multi_eval!)]
 #[derive(Debug, Clone, Copy, Add, AddAssign, Sum)]
 pub struct BigramEval {
     pub sfb: f32,
-    pub shb: f32,
-    pub movement: f32,
-    pub lateral: f32,
-    pub vertical: f32,
+    pub movement: Vec2,
     pub staccato: f32,
 }
 
@@ -317,6 +318,30 @@ pub fn finger_strength(finger: Finger) -> f32 {
     }
 }
 
+pub fn gap_costs(a: Finger, b: Finger) -> f32 {
+    match (a, b) {
+        (Finger::Thumb, _) => 0.0,
+        (Finger::Index, Finger::Middle) => 0.6,
+        (Finger::Index, Finger::Ring) => 0.5,
+        (Finger::Index, Finger::Pinky) => 0.4,
+        (Finger::Middle, Finger::Ring) => 1.0,
+        (Finger::Middle, Finger::Pinky) => 0.9,
+        (Finger::Ring, Finger::Pinky) => 1.5,
+
+        (_, Finger::Thumb)
+        | (Finger::Index, Finger::Index)
+        | (Finger::Middle, Finger::Index)
+        | (Finger::Ring, Finger::Index)
+        | (Finger::Pinky, Finger::Index)
+        | (Finger::Middle, Finger::Middle)
+        | (Finger::Ring, Finger::Middle)
+        | (Finger::Pinky, Finger::Middle)
+        | (Finger::Ring, Finger::Ring)
+        | (Finger::Pinky, Finger::Ring)
+        | (Finger::Pinky, Finger::Pinky) => unreachable!(),
+    }
+}
+
 pub fn hold_multiplier(hold: bool) -> f32 {
     match hold {
         true => 1.8,
@@ -370,7 +395,36 @@ pub fn one_letter(info: &KeyboardLayout, letter: [u8; 1]) -> (LetterEval, f32) {
                 }
             }
 
-            (LetterEval { base }, 1.0)
+            let mut stretch = Vec2::ZERO;
+            for hand in Hand::ALL {
+                let mut last_finger = None;
+                for finger in Finger::ALL {
+                    let hf = HandFinger::new(hand, finger);
+                    let Some((pos, hold)) = h[hf] else {
+                        continue;
+                    };
+
+                    if let Some((last_finger, last_pos, last_hold)) = last_finger {
+                        let cost = gap_costs(last_finger, finger);
+                        let base_pos = bases[hf];
+                        let last_base = bases[HandFinger::new(hand, last_finger)];
+
+                        let base_dist = base_pos - last_base;
+                        let now_dist: Vec2 = pos - last_pos;
+
+                        let ratio = (now_dist / base_dist).abs()
+                            * cost
+                            * hold_multiplier(hold)
+                            * hold_multiplier(last_hold);
+
+                        stretch += ratio;
+                    } else {
+                        last_finger = Some((finger, pos, hold));
+                    }
+                }
+            }
+
+            (LetterEval { base, stretch }, 1.0)
         },
         avg_reduce,
         letter,
@@ -394,42 +448,13 @@ pub fn one_bigram(info: &KeyboardLayout, bigram: [u8; 2]) -> (BigramEval, f32) {
                 })
                 .sum();
 
-            let shb = 0.0;
-            // let shb = Hand::ALL
-            //     .into_iter()
-            //     .map(|hand| {
-            //         let [count1, count2] = [h1, h2].map(|h| {
-            //             Finger::ALL
-            //                 .into_iter()
-            //                 .map(|finger| h[HandFinger::new(hand, finger)].is_some() as u8)
-            //                 .sum::<u8>()
-            //         });
-            //         let total = count1.min(count2);
-            //
-            //         let invalid = Finger::ALL
-            //             .into_iter()
-            //             .map(|finger| {
-            //                 let finger = HandFinger::new(hand, finger);
-            //                 let [a1, a2] = [h1, h2].map(|h| h[finger]);
-            //                 (a1.is_some() && a1 == a2) as u8
-            //             })
-            //             .sum::<u8>();
-            //
-            //         (total - invalid) as f32
-            //     })
-            //     .sum();
-
-            let mut movement = 0.0;
-            let mut lateral = 0.0;
-            let mut vertical = 0.0;
+            let mut movement = Vec2::ZERO;
             for pair in h1.iter().zip(h2.values()) {
                 match pair {
                     ((hand, &Some((x, _))), &Some((y, hy))) => {
                         let delta =
                             (x - y).abs() / finger_strength(hand.finger) * hold_multiplier(hy);
-                        movement += delta.length();
-                        lateral += delta.x;
-                        vertical += delta.y;
+                        movement += delta;
                     }
                     _ => {}
                 }
@@ -442,10 +467,7 @@ pub fn one_bigram(info: &KeyboardLayout, bigram: [u8; 2]) -> (BigramEval, f32) {
             (
                 BigramEval {
                     sfb,
-                    shb,
                     movement,
-                    lateral,
-                    vertical,
                     staccato,
                 },
                 1.0,

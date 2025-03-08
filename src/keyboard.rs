@@ -1,28 +1,42 @@
 use array_map::Indexable;
 use glam::Vec2;
+use num_enum::{FromPrimitive, IntoPrimitive};
 
-#[derive(Debug, Clone, Copy, Default, Indexable, PartialEq, Eq)]
+use crate::iter::Step;
+
+#[derive(Debug, Clone, Copy, Default, Indexable, PartialEq, Eq, IntoPrimitive, FromPrimitive)]
+#[repr(u8)]
 pub enum Hand {
     #[default]
-    Left,
-    Right,
+    Left = 0,
+    Right = 1,
 }
 
 impl Hand {
-    pub const ALL: [Self; 2] = [
-        Self::Left,
-        Self::Right,
-    ];
+    pub const ALL: [Self; 2] = [Self::Left, Self::Right];
 }
 
-#[derive(Debug, Clone, Copy, Default, Indexable, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Indexable, PartialEq, Eq, IntoPrimitive, FromPrimitive)]
+#[repr(u8)]
 pub enum Finger {
     #[default]
-    Thumb,
-    Index,
-    Middle,
-    Ring,
-    Pinky,
+    Thumb = 0,
+    Index = 1,
+    Middle = 2,
+    Ring = 3,
+    Pinky = 4,
+}
+
+impl Step for Finger {
+    fn next_element(self) -> Option<Self> {
+        match self {
+            Finger::Thumb => Some(Finger::Index),
+            Finger::Index => Some(Finger::Middle),
+            Finger::Middle => Some(Finger::Ring),
+            Finger::Ring => Some(Finger::Pinky),
+            Finger::Pinky => None
+        }
+    }
 }
 
 impl Finger {
@@ -101,16 +115,7 @@ unsafe impl Indexable for HandFinger {
     type Iter = HandFingerIter;
 
     fn index(self) -> usize {
-        (match self.hand {
-            Hand::Left => 0,
-            Hand::Right => 5,
-        }) + match self.finger {
-            Finger::Thumb => 0,
-            Finger::Index => 1,
-            Finger::Middle => 2,
-            Finger::Ring => 3,
-            Finger::Pinky => 4,
-        }
+        usize::from(5 * u8::from(self.hand) + u8::from(self.finger))
     }
 
     fn iter() -> Self::Iter {

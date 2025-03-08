@@ -146,6 +146,10 @@ impl Layout {
         }
     }
 
+    pub fn into_parts(self) -> (Vec<Option<Behavior>>, Vec<LayoutLayer>) {
+        (self.base_hold.0, self.layers)
+    }
+
     pub fn layers(&self) -> &[LayoutLayer] {
         &self.layers
     }

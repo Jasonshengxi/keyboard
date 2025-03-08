@@ -41,3 +41,36 @@ impl<I: Iterator> Iterator for OneIter<I> {
         }
     }
 }
+
+pub trait Step: Copy {
+    fn next_element(self) -> Option<Self>;
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct Range<T> {
+    at: Option<T>,
+    end: T,
+}
+
+impl<T> Range<T> {
+    pub fn new(at: T, end: T) -> Self {
+        Self { at: Some(at), end }
+    }
+}
+
+impl<T: Step + Eq> Iterator for Range<T> {
+    type Item = T;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let out = self.at;
+        if let Some(now) = out {
+            let next = now.next_element();
+            if next == Some(self.end) {
+                self.at = None;
+            } else {
+                self.at = next;
+            }
+        }
+        out
+    }
+}
